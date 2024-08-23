@@ -36,7 +36,7 @@ const processDocxFile = async (filePath) => {
   });
 
   const jsonData = parseHtmlToJson(result.value);
-  return result.value;
+  return jsonData;
 };
 
 const parseHtmlToJson = (htmlContent) => {
@@ -75,11 +75,20 @@ async function extractDocxContent(filePath) {
 
     const documentXmlPath = path.join(outputDir, "word", "document.xml");
     const stylesXmlPath = path.join(outputDir, "word", "styles.xml");
+    const numberingXmlPath = path.join(outputDir, "word", "numbering.xml");
+
     const documentXml = await fs.promises.readFile(documentXmlPath, "utf8");
     const stylesXml = await fs.promises.readFile(stylesXmlPath, "utf8");
+    const numberingXml = await fs.promises.readFile(numberingXmlPath, "utf8");
 
     const $doc = cheerio.load(documentXml, { xmlMode: true });
     const $styles = cheerio.load(stylesXml, { xmlMode: true });
+    const $numbering = cheerio.load(numberingXml, { xmlMode: true });
+
+    // Build numbering map from numbering.xml
+    const numberingMap = buildNumberingMap($numbering);
+
+    // console.log(JSON.stringify(numberingMap));
 
     const styleMap = {};
     $styles("w\\:style").each((_, style) => {
@@ -90,11 +99,30 @@ async function extractDocxContent(filePath) {
         styleMap[styleId] = {
           type: styleType,
           name: $styles(style).find("w\\:name").attr("w:val"),
+          basedOn: $styles(style).find("w\\:basedOn").attr("w:val"), // Capture the basedOn attribute
           runProperties: extractRunStyles($styles(style).find("w\\:rPr")),
           paragraphProperties: extractParagraphStyles(
             $styles(style).find("w\\:pPr")
           ),
         };
+      }
+    });
+
+    // Resolve inherited styles based on the 'basedOn' attribute
+    Object.keys(styleMap).forEach((styleId) => {
+      const style = styleMap[styleId];
+      if (style.basedOn) {
+        const inheritedStyle = styleMap[style.basedOn];
+        if (inheritedStyle) {
+          style.runProperties = {
+            ...inheritedStyle.runProperties,
+            ...style.runProperties,
+          };
+          style.paragraphProperties = {
+            ...inheritedStyle.paragraphProperties,
+            ...style.paragraphProperties,
+          };
+        }
       }
     });
 
@@ -156,9 +184,6 @@ async function extractDocxContent(filePath) {
             type: "paragraph",
             text: "",
             styles: {},
-            children: [],
-            // isBullet: false,
-            // bulletLevel: 0,
           };
 
           const pPr = $doc(child).find("w\\:pPr");
@@ -179,14 +204,15 @@ async function extractDocxContent(filePath) {
 
             const numPr = pPr.find("w\\:numPr");
             if (numPr.length > 0) {
-              paragraphData.isBullet = true;
-              paragraphData.bulletLevel = parseInt(
-                numPr.find("w\\:ilvl").attr("w:val"),
-                10
-              );
+              const numId = numPr.find("w\\:numId").attr("w:val");
+              const ilvl = numPr.find("w\\:ilvl").attr("w:val");
+
+              const listData = extractListInfo(numId, ilvl, numberingMap);
+              paragraphData.listData = listData;
             }
           }
 
+          const nextChild = [];
           $doc(child)
             .find("w\\:r, w\\:drawing, w\\:pict")
             .each((_, run) => {
@@ -207,20 +233,25 @@ async function extractDocxContent(filePath) {
                   ...runStyles,
                   ...extractRunStyles(rPr),
                 };
-                paragraphData.children.push({
+                nextChild.push({
                   text: runText,
                   styles: runStyles,
                 });
               } else if (runTag === "w:drawing") {
                 const imageData = parseDrawing(run);
-                paragraphData.children.push(imageData);
+                children.push(imageData);
               }
             });
 
-          paragraphData.text = paragraphData.children
+          paragraphData.text = nextChild
             .filter((child) => child.text)
             .map((child) => child.text)
             .join("");
+          paragraphData.styles = {
+            ...paragraphData.styles,
+            ...nextChild.styles,
+          };
+          paragraphData.styleName = pStyleId;
           children.push(paragraphData);
         } else if (tag === "w:tbl") {
           const tableData = {
@@ -264,14 +295,95 @@ async function extractDocxContent(filePath) {
             },
           };
           children.push(sectionData);
-        } else {
-          children.push(parseElement($doc(child)));
         }
       });
 
-      return children.filter((child) =>
-        Array.isArray(child) ? child.length > 0 : true
-      );
+      return children;
+    }
+
+    function buildNumberingMap($numbering) {
+      const abstractNumMap = {}; // Stores the abstract numbering definitions
+      const numberingMap = {}; // Stores the final mapping of numId to its levels
+
+      // Recursive function to resolve abstract numbering, including any references to other abstractNumIds
+      function resolveAbstractNum(abstractNumId) {
+        // If this abstractNumId is already resolved, return it
+        if (abstractNumMap[abstractNumId]?.resolved) {
+          return abstractNumMap[abstractNumId].levels;
+        }
+
+        const levels = abstractNumMap[abstractNumId]?.levels || [];
+
+        // Check if this abstractNumId refers to another abstractNumId
+        const referencedAbstractNumId =
+          abstractNumMap[abstractNumId]?.referencedAbstractNumId;
+        if (referencedAbstractNumId) {
+          // Recursively resolve the referenced abstractNumId and merge the levels
+          const referencedLevels = resolveAbstractNum(referencedAbstractNumId);
+          Object.assign(levels, referencedLevels);
+        }
+
+        // Mark this abstractNumId as resolved to avoid circular references
+        abstractNumMap[abstractNumId] = {
+          levels,
+          resolved: true,
+        };
+
+        return levels;
+      }
+
+      // Loop through each abstract numbering definition and build the abstractNumMap
+      $numbering("w\\:abstractNum").each((_, abstractNum) => {
+        const abstractNumId = $numbering(abstractNum).attr("w:abstractNumId");
+        const levels = [];
+
+        $numbering(abstractNum)
+          .find("w\\:lvl")
+          .each((_, level) => {
+            const levelIndex = $numbering(level).attr("w:ilvl");
+            const numFmt = $numbering(level).find("w\\:numFmt").attr("w:val");
+            const lvlText = $numbering(level).find("w\\:lvlText").attr("w:val");
+
+            // Get indentation spacing
+            const indent = {};
+            const indElement = $numbering(level).find("w\\:ind");
+            if (indElement.length > 0) {
+              indent.left = indElement.attr("w:left") || null;
+              indent.hanging = indElement.attr("w:hanging") || null;
+              indent.firstLine = indElement.attr("w:firstLine") || null;
+            }
+
+            levels[levelIndex] = {
+              numFmt,
+              lvlText,
+              indent,
+            };
+          });
+
+        // Check if this abstractNum refers to another abstractNum
+        const referencedAbstractNumId = $numbering(abstractNum)
+          .find("w\\:nsid")
+          .attr("w:val");
+        abstractNumMap[abstractNumId] = {
+          levels,
+          referencedAbstractNumId: referencedAbstractNumId || null,
+          resolved: false, // Initially set as unresolved
+        };
+      });
+
+      // Loop through each num element to build the numberingMap
+      $numbering("w\\:num").each((_, num) => {
+        const numId = $numbering(num).attr("w:numId");
+        const abstractNumId = $numbering(num)
+          .find("w\\:abstractNumId")
+          .attr("w:val");
+
+        if (abstractNumId) {
+          numberingMap[numId] = resolveAbstractNum(abstractNumId);
+        }
+      });
+
+      return numberingMap;
     }
 
     function parseDrawing(drawingElement) {
@@ -334,14 +446,27 @@ async function extractDocxContent(filePath) {
       return imageData;
     }
 
-    const documentContent = parseElement($doc("w\\:body"));
+    function extractListInfo(numId, ilvl, numberingMap) {
+      const levelInfo = numberingMap[numId] && numberingMap[numId][ilvl];
+      console.log(numId, ilvl, levelInfo);
 
+      return levelInfo
+        ? {
+            isBullet: levelInfo.numFmt === "bullet",
+            bulletText: levelInfo.lvlText,
+            level: ilvl,
+            indent: levelInfo.indent,
+          }
+        : null;
+    }
+
+    const parsedContent = parseElement($doc("w\\:document > w\\:body"));
     rimraf.sync(outputDir);
 
-    return documentContent;
-  } catch (error) {
-    console.error("Error processing DOCX file:", error);
-    return null;
+    return parsedContent;
+  } catch (err) {
+    console.error("Error extracting DOCX content:", err);
+    throw err;
   }
 }
 

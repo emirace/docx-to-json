@@ -448,7 +448,6 @@ async function extractDocxContent(filePath) {
 
     function extractListInfo(numId, ilvl, numberingMap) {
       const levelInfo = numberingMap[numId] && numberingMap[numId][ilvl];
-      console.log(numId, ilvl, levelInfo);
 
       return levelInfo
         ? {
@@ -463,11 +462,82 @@ async function extractDocxContent(filePath) {
     const parsedContent = parseElement($doc("w\\:document > w\\:body"));
     rimraf.sync(outputDir);
 
-    return parsedContent;
+    return mapSections(parsedContent);
   } catch (err) {
     console.error("Error extracting DOCX content:", err);
     throw err;
   }
+}
+
+function mapSections(paragraphs) {
+  const sections = [];
+  let currentSection = null;
+  let currentSubsection = null;
+  let preamble = { body: [] };
+
+  paragraphs.forEach((paragraph) => {
+    const { styleName, text } = paragraph;
+
+    if (["Heading1", "TGTHEADING1"].includes(styleName)) {
+      if (currentSubsection) {
+        currentSection.body.push(currentSubsection);
+      }
+
+      // If there's an active section, push it to the sections array
+      if (currentSection) {
+        sections.push(currentSection);
+      }
+
+      // Start a new main section
+      currentSection = {
+        title: text,
+        body: [],
+        // subsections: [],
+      };
+
+      // Reset current subsection
+      currentSubsection = null;
+    } else if (styleName === "TGTHEADING2" && currentSection) {
+      // If there's an active subsection, push it to the subsections array
+      if (currentSubsection) {
+        currentSection.body.push(currentSubsection);
+      }
+
+      // Start a new subsection within the current section
+      currentSubsection = {
+        title: text,
+        body: [],
+      };
+    } else if (currentSubsection) {
+      // If there's an active subsection, add body to it
+      currentSubsection.body.push(paragraph);
+    } else if (currentSection) {
+      // If there's no active subsection, add body to the current section
+      currentSection.body.push(paragraph);
+    } else {
+      // If no section has started, add body to the preamble
+      preamble.body.push(paragraph);
+    }
+  });
+
+  // Push the last subsection and section if they exist
+  if (currentSubsection) {
+    currentSection.body.push(currentSubsection);
+  }
+
+  if (currentSection) {
+    sections.push(currentSection);
+  }
+
+  // Include preamble if it has any body
+  if (preamble.body.length > 0) {
+    sections.unshift({
+      title: "Cover Page",
+      body: preamble.body,
+    });
+  }
+
+  return sections;
 }
 
 // async function extractDocxContent(filePath) {

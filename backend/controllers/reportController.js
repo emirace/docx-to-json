@@ -2,8 +2,7 @@ const { extractDocxContent } = require("../utils/fileProcessor");
 const fs = require("fs");
 const mongoose = require("mongoose");
 
-// Assuming you have a Mongoose model for the JSON data
-const Report = require("../models/Report"); // Replace with your actual model
+const Report = require("../models/report");
 
 const uploadReport = async (req, res) => {
   try {

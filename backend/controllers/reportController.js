@@ -1,25 +1,30 @@
-const {
-  processDocxFile,
-  extractDocxContent,
-} = require("../utils/fileProcessor");
-const { extractStylesFromDocx } = require("../utils/docx");
-const Report = require("../models/report");
-const path = require("path");
+const { extractDocxContent } = require("../utils/fileProcessor");
 const fs = require("fs");
+const mongoose = require("mongoose");
+
+// Assuming you have a Mongoose model for the JSON data
+const Report = require("../models/Report"); // Replace with your actual model
 
 const uploadReport = async (req, res) => {
-  const filePath = req.file.path;
-  // const jsonData = await processDocxFile(filePath);
-  // const jsonData = await extractStylesFromDocx(filePath);
-  // Example usage
-  const jsonData = await extractDocxContent(filePath);
+  try {
+    const filePath = req.file.path;
+    const jsonData = await extractDocxContent(filePath);
 
-  // const report = new Report({ jsonData });
-  // await report.save();
+    // Save the JSON data to MongoDB
+    const report = new Report({ content: jsonData }); // Adjust based on your model's structure
+    await report.save();
 
-  fs.unlinkSync(filePath); // Clean up the uploaded file
+    // Remove the file after processing
+    fs.unlinkSync(filePath);
 
-  res.json(jsonData);
+    // Respond with the saved document
+    res.json(report);
+  } catch (error) {
+    console.error("Error processing the file:", error);
+    res
+      .status(500)
+      .json({ message: "An error occurred while processing the file." });
+  }
 };
 
 module.exports = { uploadReport };

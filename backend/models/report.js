@@ -1,8 +1,13 @@
 const mongoose = require("mongoose");
 
-const ReportSchema = new mongoose.Schema({
-  jsonData: { type: Object, required: true },
-  images: [String],
-});
+const ReportSchema = new mongoose.Schema(
+  {
+    content: [mongoose.Schema.Types.Mixed],
+  },
+  { timestamps: true }
+);
 
-module.exports = mongoose.model("Report", ReportSchema);
+// Model based on the schema
+const Report = mongoose.model("Report", ReportSchema);
+
+module.exports = Report;

@@ -1,67 +1,28 @@
-const mammoth = require("mammoth");
 const cheerio = require("cheerio");
 const path = require("path");
 const unzipper = require("unzipper");
 const fs = require("fs");
 const rimraf = require("rimraf");
+const cloudinary = require("cloudinary").v2;
 
-const processDocxFile = async (filePath) => {
-  const buffer = fs.readFileSync(filePath);
+const dotenv = require("dotenv");
 
-  // Custom style map
-  const styleMap = [
-    "p[style-name='Cover Product title'] => p.cover-product-title",
-    "p[style-name='Document title'] => p.document-title",
-    "p[style-name='Cover Job details'] => p.cover-job-details",
-    "p[style-name='TOC Heading'] => p.toc-heading",
-    "p[style-name='TGT_Body'] => p.tgt-body",
-    "p[style-name='toc 1'] => p.toc-1",
-    "p[style-name='toc 2'] => p.toc-2",
-    "p[style-name='TGT_HEADING2'] => h2.tgt-heading2",
-    "p[style-name='List Bullet'] => ul > li",
-    "p[style-name='caption'] => p.caption",
-    "p[style-name='TGT_Caption'] => p.tgt-caption",
-    "p[style-name='TGT_HEADING1'] => h1.tgt-heading1",
-    "p[style-name='Body Text'] => p.body-text",
-    "r[style-name='Body Text Char'] => span.body-text-char",
-    "r[style-name='Caption Char'] => span.caption-char",
-    "r[style-name='Heading 1 Char'] => span.heading1-char",
-  ];
+dotenv.config();
 
-  const result = await mammoth.extractRawText({ buffer }, { styleMap });
+// Configure Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
-  // Log any warnings
-  result.messages.forEach((message) => {
-    console.warn(message);
+async function uploadToCloudinary(imagePath) {
+  return cloudinary.uploader.upload(imagePath, {
+    folder: "docx", // Optional: specify a folder in Cloudinary
+    use_filename: true, // Use the original filename for the uploaded file
+    unique_filename: true, // Prevents Cloudinary from adding random characters to the filename
   });
-
-  const jsonData = parseHtmlToJson(result.value);
-  return jsonData;
-};
-
-const parseHtmlToJson = (htmlContent) => {
-  const $ = cheerio.load(htmlContent);
-
-  const buildJsonStructure = (element) => {
-    const children = [];
-
-    $(element)
-      .children()
-      .each((_, child) => {
-        children.push(buildJsonStructure(child));
-      });
-
-    return {
-      tag: $(element).get(0).tagName,
-      text: $(element).text(),
-      style: $(element).attr("class") || "",
-      children: children.length > 0 ? children : undefined,
-    };
-  };
-  const jsonResult = buildJsonStructure($.root());
-
-  return jsonResult;
-};
+}
 
 async function extractDocxContent(filePath) {
   try {
@@ -173,10 +134,10 @@ async function extractDocxContent(filePath) {
       return styles;
     }
 
-    function parseElement(element) {
+    async function parseElement(element) {
       const children = [];
 
-      element.children().each((_, child) => {
+      for (const child of element.children()) {
         const tag = $doc(child)[0].tagName;
 
         if (tag === "w:p") {
@@ -213,35 +174,34 @@ async function extractDocxContent(filePath) {
           }
 
           const nextChild = [];
-          $doc(child)
-            .find("w\\:r, w\\:drawing, w\\:pict")
-            .each((_, run) => {
-              const runTag = $doc(run)[0].tagName;
+          for (const run of $doc(child).find("w\\:r, w\\:drawing, w\\:pict")) {
+            const runTag = $doc(run)[0].tagName;
 
-              if (runTag === "w:r") {
-                const runText = $doc(run).find("w\\:t").text();
-                const rPr = $doc(run).find("w\\:rPr");
-                const rStyleId = rPr.find("w\\:rStyle").attr("w:val");
-                let runStyles = {};
+            if (runTag === "w:r") {
+              const runText = $doc(run).find("w\\:t").text();
+              const rPr = $doc(run).find("w\\:rPr");
+              const rStyleId = rPr.find("w\\:rStyle").attr("w:val");
+              let runStyles = {};
 
-                if (rStyleId && styleMap[rStyleId]) {
-                  runStyles = {
-                    ...styleMap[rStyleId].runProperties,
-                  };
-                }
+              if (rStyleId && styleMap[rStyleId]) {
                 runStyles = {
-                  ...runStyles,
-                  ...extractRunStyles(rPr),
+                  ...styleMap[rStyleId].runProperties,
                 };
-                nextChild.push({
-                  text: runText,
-                  styles: runStyles,
-                });
-              } else if (runTag === "w:drawing") {
-                const imageData = parseDrawing(run);
-                children.push(imageData);
               }
-            });
+              runStyles = {
+                ...runStyles,
+                ...extractRunStyles(rPr),
+              };
+              nextChild.push({
+                text: runText,
+                styles: runStyles,
+              });
+            } else if (runTag === "w:drawing") {
+              const imageData = await parseDrawing(run);
+              console.log(imageData);
+              children.push(imageData);
+            }
+          }
 
           paragraphData.text = nextChild
             .filter((child) => child.text)
@@ -259,23 +219,19 @@ async function extractDocxContent(filePath) {
             rows: [],
           };
 
-          $doc(child)
-            .find("w\\:tr")
-            .each((_, row) => {
-              const rowData = [];
+          for (const row of $doc(child).find("w\\:tr")) {
+            const rowData = [];
 
-              $doc(row)
-                .find("w\\:tc")
-                .each((_, cell) => {
-                  const cellData = {
-                    type: "cell",
-                    content: parseElement($doc(cell)),
-                  };
-                  rowData.push(cellData);
-                });
+            for (const cell of $doc(row).find("w\\:tc")) {
+              const cellData = {
+                type: "cell",
+                content: await parseElement($doc(cell)),
+              };
+              rowData.push(cellData);
+            }
 
-              tableData.rows.push(rowData);
-            });
+            tableData.rows.push(rowData);
+          }
 
           children.push(tableData);
         } else if (tag === "w:sectPr") {
@@ -296,7 +252,7 @@ async function extractDocxContent(filePath) {
           };
           children.push(sectionData);
         }
-      });
+      }
 
       return children;
     }
@@ -386,7 +342,7 @@ async function extractDocxContent(filePath) {
       return numberingMap;
     }
 
-    function parseDrawing(drawingElement) {
+    async function parseDrawing(drawingElement) {
       const anchor = $doc(drawingElement).find("wp\\:anchor");
       const graphicData = $doc(drawingElement).find("a\\:graphicData");
 
@@ -435,14 +391,16 @@ async function extractDocxContent(filePath) {
         const target = $rels(`Relationship[Id="${embedId}"]`).attr("Target");
         if (target) {
           const imagePath = path.join(outputDir, "word", target);
-          const imageBuffer = fs.readFileSync(imagePath);
-          const base64Image = `data:image/png;base64,${imageBuffer.toString(
-            "base64"
-          )}`;
-          imageData.src = base64Image;
+
+          try {
+            const uploadResult = await uploadToCloudinary(imagePath);
+            imageData.src = uploadResult.secure_url; // Cloudinary secure URL of the uploaded image
+          } catch (error) {
+            console.error("Error uploading image to Cloudinary:", error);
+          }
         }
       }
-
+      console.log(imageData);
       return imageData;
     }
 
@@ -459,7 +417,7 @@ async function extractDocxContent(filePath) {
         : null;
     }
 
-    const parsedContent = parseElement($doc("w\\:document > w\\:body"));
+    const parsedContent = await parseElement($doc("w\\:document > w\\:body"));
     rimraf.sync(outputDir);
 
     return mapSections(parsedContent);
@@ -477,6 +435,9 @@ function mapSections(paragraphs) {
 
   paragraphs.forEach((paragraph) => {
     const { styleName, text } = paragraph;
+    if (paragraph.type === "image") {
+      console.log("image", paragraph);
+    }
 
     if (["Heading1", "TGTHEADING1"].includes(styleName)) {
       if (currentSubsection) {
@@ -540,219 +501,4 @@ function mapSections(paragraphs) {
   return sections;
 }
 
-// async function extractDocxContent(filePath) {
-//   try {
-//     // Step 1: Unzip the DOCX file and extract the document.xml and styles.xml
-//     const outputDir = path.join(__dirname, "output");
-//     await fs.promises.mkdir(outputDir, { recursive: true });
-
-//     await fs
-//       .createReadStream(filePath)
-//       .pipe(unzipper.Extract({ path: outputDir }))
-//       .promise();
-
-//     // Load document.xml and styles.xml
-//     const documentXmlPath = path.join(outputDir, "word", "document.xml");
-//     const stylesXmlPath = path.join(outputDir, "word", "styles.xml");
-//     const documentXml = await fs.promises.readFile(documentXmlPath, "utf8");
-//     const stylesXml = await fs.promises.readFile(stylesXmlPath, "utf8");
-
-//     // Use cheerio to parse XML files
-//     const $doc = cheerio.load(documentXml, { xmlMode: true });
-//     const $styles = cheerio.load(stylesXml, { xmlMode: true });
-
-//     // Step 2: Create a mapping of styles from styles.xml
-//     const styleMap = {};
-
-//     $styles("w\\:style").each((_, style) => {
-//       const styleId = $styles(style).attr("w:styleId");
-//       const styleType = $styles(style).attr("w:type");
-
-//       if (styleId && styleType) {
-//         styleMap[styleId] = {
-//           type: styleType,
-//           name: $styles(style).find("w\\:name").attr("w:val"),
-//           runProperties: extractRunStyles($styles(style).find("w\\:rPr")),
-//           paragraphProperties: extractParagraphStyles(
-//             $styles(style).find("w\\:pPr")
-//           ),
-//         };
-//       }
-//     });
-
-//     // Function to extract run-level styles (inline styles like bold, italic, etc.)
-//     function extractRunStyles(rPr) {
-//       const styles = {};
-
-//       if (rPr.find("w\\:b").length > 0) styles.bold = true;
-//       if (rPr.find("w\\:i").length > 0) styles.italic = true;
-//       if (rPr.find("w\\:u").length > 0) styles.underline = true;
-//       if (rPr.find("w\\:strike").length > 0) styles.strikeThrough = true;
-
-//       const color = rPr.find("w\\:color").attr("w:val");
-//       if (color) styles.color = color;
-
-//       const fontSize = rPr.find("w\\:sz").attr("w:val");
-//       if (fontSize) styles.fontSize = fontSize;
-
-//       const font = rPr.find("w\\:rFonts").attr("w:ascii");
-//       if (font) styles.font = font;
-
-//       const backgroundColor = rPr.find("w\\:shd").attr("w:fill");
-//       if (backgroundColor) styles.backgroundColor = backgroundColor;
-
-//       const highlight = rPr.find("w\\:highlight").attr("w:val");
-//       if (highlight) styles.highlight = highlight;
-
-//       return styles;
-//     }
-
-//     // Function to extract paragraph-level styles (block styles like alignment, spacing, etc.)
-//     function extractParagraphStyles(pPr) {
-//       const styles = {};
-
-//       const alignment = pPr.find("w\\:jc").attr("w:val");
-//       if (alignment) styles.alignment = alignment;
-
-//       const spacingBefore = pPr.find("w\\:spacing").attr("w:before");
-//       if (spacingBefore) styles.spacingBefore = spacingBefore;
-
-//       const spacingAfter = pPr.find("w\\:spacing").attr("w:after");
-//       if (spacingAfter) styles.spacingAfter = spacingAfter;
-
-//       const indentLeft = pPr.find("w\\:ind").attr("w:left");
-//       if (indentLeft) styles.indentLeft = indentLeft;
-
-//       const indentRight = pPr.find("w\\:ind").attr("w:right");
-//       if (indentRight) styles.indentRight = indentRight;
-
-//       return styles;
-//     }
-
-//     // Step 5: Parse the document.xml content, applying styles from styles.xml
-//     function parseElement(element) {
-//       const children = [];
-
-//       element.children().each((_, child) => {
-//         const tag = $doc(child)[0].tagName;
-
-//         if (tag === "w:p") {
-//           // Handle paragraph
-//           const paragraphData = {
-//             type: "paragraph",
-//             text: "",
-//             styles: {},
-//             children: [],
-//           };
-
-//           // Extract paragraph-level styles
-//           const pPr = $doc(child).find("w\\:pPr");
-//           const pStyleId = pPr.find("w\\:pStyle").attr("w:val");
-//           // console.log(pStyleId);
-//           if (pStyleId && styleMap[pStyleId]) {
-//             // console.log(styleMap[pStyleId]);
-//             paragraphData.styles = {
-//               ...styleMap[pStyleId].paragraphProperties,
-//               ...styleMap[pStyleId].runProperties,
-//             };
-//           }
-//           if (pPr.length) {
-//             paragraphData.styles = {
-//               ...paragraphData.styles,
-//               ...extractParagraphStyles(pPr),
-//             };
-//           }
-
-//           // Extract run-level text and styles
-//           $doc(child)
-//             .find("w\\:r")
-//             .each((_, run) => {
-//               const runText = $doc(run).find("w\\:t").text();
-//               const rPr = $doc(run).find("w\\:rPr");
-//               const rStyleId = rPr.find("w\\:rStyle").attr("w:val");
-//               let runStyles = {};
-
-//               if (rStyleId && styleMap[rStyleId]) {
-//                 runStyles = {
-//                   ...styleMap[rStyleId].runProperties,
-//                 };
-//               }
-//               runStyles = {
-//                 ...runStyles,
-//                 ...extractRunStyles(rPr),
-//               };
-//               paragraphData.children.push({ text: runText, styles: runStyles });
-//             });
-
-//           paragraphData.text = paragraphData.children
-//             .map((child) => child.text)
-//             .join("");
-//           children.push(paragraphData);
-//         } else if (tag === "w:tbl") {
-//           // Handle table
-//           const tableData = {
-//             type: "table",
-//             rows: [],
-//           };
-
-//           $doc(child)
-//             .find("w\\:tr")
-//             .each((_, row) => {
-//               const rowData = [];
-
-//               $doc(row)
-//                 .find("w\\:tc")
-//                 .each((_, cell) => {
-//                   const cellData = {
-//                     type: "cell",
-//                     content: parseElement($doc(cell)),
-//                   };
-//                   rowData.push(cellData);
-//                 });
-
-//               tableData.rows.push(rowData);
-//             });
-
-//           children.push(tableData);
-//         } else if (tag === "w:sectPr") {
-//           // Handle section properties (if necessary)
-//           const sectionData = {
-//             type: "section",
-//             styles: {
-//               pageSize:
-//                 $doc(child).find("w\\:pgSz").attr("w:w") +
-//                 "x" +
-//                 $doc(child).find("w\\:pgSz").attr("w:h"),
-//               margins: {
-//                 top: $doc(child).find("w\\:pgMar").attr("w:top"),
-//                 bottom: $doc(child).find("w\\:pgMar").attr("w:bottom"),
-//                 left: $doc(child).find("w\\:pgMar").attr("w:left"),
-//                 right: $doc(child).find("w\\:pgMar").attr("w:right"),
-//               },
-//             },
-//           };
-//           children.push(sectionData);
-//         } else {
-//           // Handle other tags if necessary
-//           children.push(parseElement($doc(child)));
-//         }
-//       });
-
-//       return children.filter((child) =>
-//         Array.isArray(child) ? child.length > 0 : true
-//       );
-//     }
-
-//     // Step 6: Parse the document content
-//     const documentContent = parseElement($doc("w\\:body"));
-
-//     rimraf.sync(outputDir);
-
-//     return documentContent;
-//   } catch (error) {
-//     console.error("Error processing DOCX file:", error);
-//     return null;
-//   }
-// }
-
-module.exports = { processDocxFile, extractDocxContent };
+module.exports = { extractDocxContent };

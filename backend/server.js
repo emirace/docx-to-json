@@ -5,7 +5,7 @@ const reportRoutes = require("./routes/reportRoutes");
 const dotenv = require("dotenv");
 
 dotenv.config();
-// connectDB();
+connectDB();
 
 const app = express();
 app.use(cors());

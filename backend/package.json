@@ -12,6 +12,7 @@
   "license": "ISC",
   "dependencies": {
     "cheerio": "^1.0.0",
+    "cloudinary": "^2.4.0",
     "cors": "^2.8.5",
     "docx": "^8.5.0",
     "dotenv": "^16.4.5",

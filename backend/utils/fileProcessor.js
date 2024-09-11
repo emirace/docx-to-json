@@ -434,63 +434,87 @@ function mapSections(paragraphs) {
   let preamble = { body: [] };
 
   paragraphs.forEach((paragraph) => {
-    const { styleName, text } = paragraph;
-    if (paragraph.type === "image") {
-      console.log("image", paragraph);
+    const { styleName, text, type, ...otherProperties } = paragraph;
+    if (styleName === "TOCHeading") {
+      console.log(paragraph);
     }
 
+    // Ignore paragraphs with no text
+    if (type === "paragraph" && (!text || text.trim() === "")) {
+      return;
+    }
+
+    // Handle Heading1 and TGTHEADING1 (Main Section)
     if (["Heading1", "TGTHEADING1"].includes(styleName)) {
-      if (currentSubsection) {
+      // Push the current subsection to the current section if it has body content
+      if (currentSubsection && currentSubsection.body.length > 0) {
         currentSection.body.push(currentSubsection);
       }
 
-      // If there's an active section, push it to the sections array
-      if (currentSection) {
+      // Push the current section to sections if it has body content
+      if (currentSection && currentSection.body.length > 0) {
         sections.push(currentSection);
       }
 
-      // Start a new main section
+      // Start a new section
       currentSection = {
         title: text,
         body: [],
-        // subsections: [],
       };
 
       // Reset current subsection
       currentSubsection = null;
-    } else if (styleName === "TGTHEADING2" && currentSection) {
-      // If there's an active subsection, push it to the subsections array
-      if (currentSubsection) {
+    }
+    // Handle TGTHEADING2 (Subsection)
+    else if (styleName === "TGTHEADING2" && currentSection) {
+      // Push the current subsection to the current section if it has body content
+      if (currentSubsection && currentSubsection.body.length > 0) {
         currentSection.body.push(currentSubsection);
       }
 
-      // Start a new subsection within the current section
+      // Start a new subsection
       currentSubsection = {
         title: text,
         body: [],
       };
-    } else if (currentSubsection) {
-      // If there's an active subsection, add body to it
-      currentSubsection.body.push(paragraph);
-    } else if (currentSection) {
-      // If there's no active subsection, add body to the current section
-      currentSection.body.push(paragraph);
-    } else {
-      // If no section has started, add body to the preamble
-      preamble.body.push(paragraph);
+    }
+    // Handle adding paragraphs to subsections
+    else if (currentSubsection) {
+      currentSubsection.body.push({
+        value: text,
+        type: type === "paragraph" ? "Text" : type,
+        ...otherProperties,
+      });
+    }
+    // Handle adding paragraphs to sections
+    else if (currentSection) {
+      currentSection.body.push({
+        value: text,
+        type: type === "paragraph" ? "Text" : type,
+        ...otherProperties,
+      });
+    }
+    // Handle preamble before any sections
+    else {
+      preamble.body.push({
+        value: text,
+        type: type === "paragraph" ? "Text" : type,
+        ...otherProperties,
+      });
     }
   });
 
-  // Push the last subsection and section if they exist
-  if (currentSubsection) {
+  // Push the last subsection to the current section if it has body content
+  if (currentSubsection && currentSubsection.body.length > 0) {
     currentSection.body.push(currentSubsection);
   }
 
-  if (currentSection) {
+  // Push the current section to sections if it has body content
+  if (currentSection && currentSection.body.length > 0) {
     sections.push(currentSection);
   }
 
-  // Include preamble if it has any body
+  // Add preamble to sections if it has body content
   if (preamble.body.length > 0) {
     sections.unshift({
       title: "Cover Page",

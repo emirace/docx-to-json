@@ -198,7 +198,6 @@ async function extractDocxContent(filePath) {
               });
             } else if (runTag === "w:drawing") {
               const imageData = await parseDrawing(run);
-              console.log(imageData);
               children.push(imageData);
             }
           }
@@ -342,6 +341,22 @@ async function extractDocxContent(filePath) {
       return numberingMap;
     }
 
+    function removeNullFields(obj) {
+      if (typeof obj === "object" && obj !== null) {
+        Object.keys(obj).forEach((key) => {
+          if (obj[key] === null || obj[key] === undefined) {
+            delete obj[key];
+          } else if (typeof obj[key] === "object") {
+            removeNullFields(obj[key]); // Recursively clean nested objects
+            // If the object becomes empty after cleaning, remove it
+            if (Object.keys(obj[key]).length === 0) {
+              delete obj[key];
+            }
+          }
+        });
+      }
+    }
+
     async function parseDrawing(drawingElement) {
       const anchor = $doc(drawingElement).find("wp\\:anchor");
       const graphicData = $doc(drawingElement).find("a\\:graphicData");
@@ -400,7 +415,10 @@ async function extractDocxContent(filePath) {
           }
         }
       }
-      console.log(imageData);
+
+      // Remove any null or empty fields from imageData
+      removeNullFields(imageData);
+
       return imageData;
     }
 
@@ -432,12 +450,10 @@ function mapSections(paragraphs) {
   let currentSection = null;
   let currentSubsection = null;
   let preamble = { body: [] };
+  let imageCounter = 1; // To count the figure numbers
 
-  paragraphs.forEach((paragraph) => {
+  paragraphs.forEach((paragraph, index) => {
     const { styleName, text, type, ...otherProperties } = paragraph;
-    if (styleName === "TOCHeading") {
-      console.log(paragraph);
-    }
 
     // Ignore paragraphs with no text
     if (type === "paragraph" && (!text || text.trim() === "")) {
@@ -477,6 +493,49 @@ function mapSections(paragraphs) {
         title: text,
         body: [],
       };
+    }
+    // Handle images and check for captions
+    else if (type === "image") {
+      const prevParagraph = paragraphs[index - 1];
+
+      // If the previous paragraph is not a caption, insert a custom caption
+      if (!prevParagraph || prevParagraph.styleName !== "Caption") {
+        const customCaption = {
+          type: "Text",
+          value: `Figure ${imageCounter}: Custom caption for image`,
+        };
+
+        if (currentSubsection) {
+          currentSubsection.body.push(customCaption);
+        } else if (currentSection) {
+          currentSection.body.push(customCaption);
+        } else {
+          preamble.body.push(customCaption);
+        }
+
+        imageCounter++; // Increment the image/figure counter
+      }
+
+      // Add the image to the appropriate section
+      if (currentSubsection) {
+        currentSubsection.body.push({
+          value: text,
+          type: "image",
+          ...otherProperties,
+        });
+      } else if (currentSection) {
+        currentSection.body.push({
+          value: text,
+          type: "image",
+          ...otherProperties,
+        });
+      } else {
+        preamble.body.push({
+          value: text,
+          type: "image",
+          ...otherProperties,
+        });
+      }
     }
     // Handle adding paragraphs to subsections
     else if (currentSubsection) {

@@ -198,20 +198,28 @@ async function extractDocxContent(filePath) {
               });
             } else if (runTag === "w:drawing") {
               const imageData = await parseDrawing(run);
-              children.push(imageData);
+              if (imageData) {
+                children.push(imageData);
+              }
             }
           }
 
-          paragraphData.text = nextChild
+          // Collect the text from the runs
+          const paragraphText = nextChild
             .filter((child) => child.text)
             .map((child) => child.text)
             .join("");
-          paragraphData.styles = {
-            ...paragraphData.styles,
-            ...nextChild.styles,
-          };
-          paragraphData.styleName = pStyleId;
-          children.push(paragraphData);
+
+          // Only add paragraphData if there is text content
+          if (paragraphText.trim() !== "") {
+            paragraphData.text = paragraphText;
+            paragraphData.styles = {
+              ...paragraphData.styles,
+              ...nextChild.styles,
+            };
+            paragraphData.styleName = pStyleId;
+            children.push(paragraphData);
+          }
         } else if (tag === "w:tbl") {
           const tableData = {
             type: "table",
@@ -418,8 +426,10 @@ async function extractDocxContent(filePath) {
 
       // Remove any null or empty fields from imageData
       removeNullFields(imageData);
-
-      return imageData;
+      if (imageData.src) {
+        return imageData;
+      }
+      return null;
     }
 
     function extractListInfo(numId, ilvl, numberingMap) {

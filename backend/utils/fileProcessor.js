@@ -446,7 +446,7 @@ async function extractDocxContent(filePath) {
     }
 
     const parsedContent = await parseElement($doc("w\\:document > w\\:body"));
-    rimraf.sync(outputDir);
+    // rimraf.sync(outputDir);
 
     return mapSections(parsedContent);
   } catch (err) {
@@ -509,7 +509,12 @@ function mapSections(paragraphs) {
       const prevParagraph = paragraphs[index - 1];
 
       // If the previous paragraph is not a caption, insert a custom caption
-      if (!prevParagraph || prevParagraph.styleName !== "Caption") {
+      if (
+        !prevParagraph ||
+        (prevParagraph.styleName !== "Caption" &&
+          prevParagraph.styleName !== "tgtcaption")
+      ) {
+        console.log(prevParagraph.styleName);
         const customCaption = {
           type: "Text",
           value: `Figure ${imageCounter}: Custom caption for image`,

@@ -1,55 +1,24 @@
-const cheerio = require("cheerio");
-const path = require("path");
-const unzipper = require("unzipper");
-const fs = require("fs");
-const rimraf = require("rimraf");
-const cloudinary = require("cloudinary").v2;
+import JSZip from "jszip";
+import * as cheerio from "cheerio";
+import { uploadImage } from "./services/api";
 
-const dotenv = require("dotenv");
-
-dotenv.config();
-
-// Configure Cloudinary
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-});
-
-async function uploadToCloudinary(imagePath) {
-  return cloudinary.uploader.upload(imagePath, {
-    folder: "docx", // Optional: specify a folder in Cloudinary
-    use_filename: true, // Use the original filename for the uploaded file
-    unique_filename: true, // Prevents Cloudinary from adding random characters to the filename
-  });
-}
-
-async function extractDocxContent(filePath) {
+export async function extractDocxContent(file) {
   try {
-    const outputDir = path.join(__dirname, "output");
-    await fs.promises.mkdir(outputDir, { recursive: true });
+    // Load the DOCX file (which is a zip) using JSZip
+    const zip = await JSZip.loadAsync(file);
 
-    await fs
-      .createReadStream(filePath)
-      .pipe(unzipper.Extract({ path: outputDir }))
-      .promise();
+    // Extract XML files from the zip
+    const documentXml = await zip.file("word/document.xml").async("text");
+    const stylesXml = await zip.file("word/styles.xml").async("text");
+    const numberingXml = await zip.file("word/numbering.xml").async("text");
 
-    const documentXmlPath = path.join(outputDir, "word", "document.xml");
-    const stylesXmlPath = path.join(outputDir, "word", "styles.xml");
-    const numberingXmlPath = path.join(outputDir, "word", "numbering.xml");
-
-    const documentXml = await fs.promises.readFile(documentXmlPath, "utf8");
-    const stylesXml = await fs.promises.readFile(stylesXmlPath, "utf8");
-    const numberingXml = await fs.promises.readFile(numberingXmlPath, "utf8");
-
+    // Load the XML content with Cheerio
     const $doc = cheerio.load(documentXml, { xmlMode: true });
     const $styles = cheerio.load(stylesXml, { xmlMode: true });
     const $numbering = cheerio.load(numberingXml, { xmlMode: true });
 
     // Build numbering map from numbering.xml
     const numberingMap = buildNumberingMap($numbering);
-
-    // console.log(JSON.stringify(numberingMap));
 
     const styleMap = {};
     $styles("w\\:style").each((_, style) => {
@@ -60,7 +29,7 @@ async function extractDocxContent(filePath) {
         styleMap[styleId] = {
           type: styleType,
           name: $styles(style).find("w\\:name").attr("w:val"),
-          basedOn: $styles(style).find("w\\:basedOn").attr("w:val"), // Capture the basedOn attribute
+          basedOn: $styles(style).find("w\\:basedOn").attr("w:val"),
           runProperties: extractRunStyles($styles(style).find("w\\:rPr")),
           paragraphProperties: extractParagraphStyles(
             $styles(style).find("w\\:pPr")
@@ -402,28 +371,28 @@ async function extractDocxContent(filePath) {
       const embedId = blip.attr("r:embed");
 
       if (embedId) {
-        const relsPath = path.join(
-          outputDir,
-          "word",
-          "_rels",
-          "document.xml.rels"
-        );
-        const relsXml = fs.readFileSync(relsPath, "utf8");
+        // Read the document relationships XML
+        const relsXml = await zip
+          .file("word/_rels/document.xml.rels")
+          .async("text");
         const $rels = cheerio.load(relsXml, { xmlMode: true });
 
+        // Find the image's target based on the embedId
         const target = $rels(`Relationship[Id="${embedId}"]`).attr("Target");
         if (target) {
-          const imagePath = path.join(outputDir, "word", target);
+          // Locate the image in the zip
+          const imagePath = `word/${target}`;
+          const imageFile = await zip.file(imagePath).async("blob"); // Get the image as a blob
 
           try {
-            const uploadResult = await uploadToCloudinary(imagePath);
-            imageData.src = uploadResult.secure_url; // Cloudinary secure URL of the uploaded image
+            // Upload image to Cloudinary
+            const uploadResult = await uploadImage(imageFile);
+            imageData.src = uploadResult.url;
           } catch (error) {
             console.error("Error uploading image to Cloudinary:", error);
           }
         }
       }
-
       // Remove any null or empty fields from imageData
       removeNullFields(imageData);
       if (imageData.src) {
@@ -446,7 +415,6 @@ async function extractDocxContent(filePath) {
     }
 
     const parsedContent = await parseElement($doc("w\\:document > w\\:body"));
-    // rimraf.sync(outputDir);
 
     return mapSections(parsedContent);
   } catch (err) {
@@ -514,7 +482,6 @@ function mapSections(paragraphs) {
         (prevParagraph.styleName !== "Caption" &&
           prevParagraph.styleName !== "tgtcaption")
       ) {
-        console.log(prevParagraph.styleName);
         const customCaption = {
           type: "Text",
           value: `Figure ${imageCounter}: Custom caption for image`,
@@ -598,5 +565,3 @@ function mapSections(paragraphs) {
 
   return sections;
 }
-
-module.exports = { extractDocxContent };

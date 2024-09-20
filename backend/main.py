@@ -1,13 +1,16 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from pymongo import MongoClient
-import cloudinary
-import cloudinary.uploader
+import boto3
 import os
 from dotenv import load_dotenv
+from werkzeug.utils import secure_filename
+import logging
 
 # Load environment variables from .env file
 load_dotenv()
+
+# logging.basicConfig(level=logging.DEBUG) 
 
 app = Flask(__name__)
 CORS(app)  # To handle cross-origin requests
@@ -18,12 +21,14 @@ client = MongoClient(MONGO_URI)
 db = client['mydatabase']
 collection = db['mycollection']
 
-# Cloudinary setup using environment variables
-cloudinary.config(
-  cloud_name=os.getenv('CLOUDINARY_CLOUD_NAME'),
-  api_key=os.getenv('CLOUDINARY_API_KEY'),
-  api_secret=os.getenv('CLOUDINARY_API_SECRET')
+# AWS S3 setup
+s3 = boto3.client(
+    's3',
+    aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+    aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+    region_name=os.getenv('AWS_REGION')
 )
+S3_BUCKET = os.getenv('AWS_S3_BUCKET_NAME')
 
 # Route to store JSON data in MongoDB
 @app.route('/api/store-json', methods=['POST'])
@@ -40,7 +45,7 @@ def store_json():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# Route to upload image to Cloudinary
+# Route to upload image to AWS S3
 @app.route('/api/upload-image', methods=['POST'])
 def upload_image():
     try:
@@ -50,12 +55,26 @@ def upload_image():
         file = request.files['file']
         if file.filename == '':
             return jsonify({"error": "No selected file"}), 400
+        print(file.filename)
+        # Secure the file name
+        filename = secure_filename(file.filename)
+        print(filename)
 
-        # Upload the image to Cloudinary
-        upload_result = cloudinary.uploader.upload(file)
+        # Upload the image to S3
+        s3.upload_fileobj(
+            file,
+            S3_BUCKET,
+            filename,
+            # ExtraArgs={"ACL": "public-read"}  # Set the file to be publicly accessible -
+        )
 
-        return jsonify({"message": "Image uploaded successfully", "url": upload_result['secure_url']}), 200
+
+        # Generate the file URL
+        file_url = f"https://{S3_BUCKET}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/{filename}"
+
+        return jsonify({"message": "Image uploaded successfully", "url": file_url}), 200
     except Exception as e:
+        logging.error("Error uploading image to S3", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':

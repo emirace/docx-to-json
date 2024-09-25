@@ -6,6 +6,8 @@ import os
 from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
 import logging
+from datetime import datetime
+import json
 
 # Load environment variables from .env file
 load_dotenv()
@@ -30,6 +32,20 @@ s3 = boto3.client(
 )
 S3_BUCKET = os.getenv('AWS_S3_BUCKET_NAME')
 
+def save_json_to_file(data):
+    try:
+        # Define the filename with a timestamp to avoid overwriting
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        file_name = f"stored_data_{timestamp}.json"
+        
+        # Write JSON data to the file
+        with open(file_name, 'w') as json_file:
+            json.dump(data, json_file, indent=4)
+        
+        logging.info(f"Data saved to {file_name}")
+    except Exception as e:
+        logging.error(f"Error writing JSON data to file: {str(e)}", exc_info=True)
+
 # Route to store JSON data in MongoDB
 @app.route('/api/store-json', methods=['POST'])
 def store_json():
@@ -40,6 +56,8 @@ def store_json():
 
         # Insert the data into MongoDB
         result = collection.insert_one(data)
+
+        # save_json_to_file(data)
 
         return jsonify({"message": "Data stored successfully", "id": str(result.inserted_id)}), 200
     except Exception as e:

@@ -432,14 +432,14 @@ function mapSections(paragraphs) {
 
   paragraphs.forEach((paragraph, index) => {
     const { styleName, text, type, ...otherProperties } = paragraph;
-
+    // console.log(styleName, text);
     // Ignore paragraphs with no text
     if (type === "paragraph" && (!text || text.trim() === "")) {
       return;
     }
 
     // Handle Heading1 and TGTHEADING1 (Main Section)
-    if (["Heading1", "TGTHEADING1"].includes(styleName)) {
+    if (["Heading1", "TGTHEADING1", "a7", "1"].includes(styleName)) {
       // Push the current subsection to the current section if it has body content
       if (currentSubsection && currentSubsection.body.length > 0) {
         currentSection.body.push(currentSubsection);
@@ -460,7 +460,10 @@ function mapSections(paragraphs) {
       currentSubsection = null;
     }
     // Handle TGTHEADING2 (Subsection)
-    else if (styleName === "TGTHEADING2" && currentSection) {
+    else if (
+      ["TGTHEADING2", "Heading2", "21"].includes(styleName) &&
+      currentSection
+    ) {
       // Push the current subsection to the current section if it has body content
       if (currentSubsection && currentSubsection.body.length > 0) {
         currentSection.body.push(currentSubsection);

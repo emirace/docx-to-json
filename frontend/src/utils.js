@@ -228,14 +228,12 @@ export async function extractDocxContent(file) {
           };
           children.push(sectionData);
         } else if (tag === "w:sdt") {
-          const drawing = $doc(child).find("w\\:drawing");
-          let imageData = null;
-
-          if (drawing.length > 0) {
-            // Parse the drawing in the <w:r> element
-            imageData = await parseDrawing(drawing);
-          }
-          children.push(imageData);
+          const sdtContent = $doc(child).find("w\\:sdtContent");
+          const sdtData = await parseElement(sdtContent);
+          const filterSdtData = sdtData.filter(
+            (child) => typeof child === "object" && !Array.isArray(child)
+          );
+          children.push(filterSdtData);
         }
       }
 
